@@ -7,9 +7,14 @@ require('dotenv').config();
 //--
 const express = require('express');
 const bodyParser = require('body-parser')
+const webSocket = require('ws');
 const app = express();
+require('express-ws')(app);
 
 app.use(bodyParser.json());
+
+const fsp = require('fs').promises;
+const moment = require('moment');
 
 //---- CORS policy - Update this section as needed ----
 
@@ -66,10 +71,15 @@ const region = process.env.API_REGION.substring(4, 6);
 const apiBaseUrl = "https://api-" + region +".vonage.com";
 // console.log("apiBaseUrl:", apiBaseUrl);
 
-//-------------------
+//--- Streaming timer - Audio packets to Vonage ---
 
-// Connector server (middleware)
-const processorServer = process.env.PROCESSOR_SERVER;
+// const timer = 19; // in ms, actual timer duration is higher
+const timer = 18; // in ms, actual timer duration is higher
+
+//---- ElevenLabs TTS engine ----
+
+const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+const elevenLabsAgentId = process.env.ELEVENLABS_AGENT_ID;
 
 //-------------------
 
@@ -90,6 +100,368 @@ console.log('for example');
 console.log('https://xxxx.ngrok.xxx/call?number=12995551212');
 console.log('------------------------------------------------------------');
 
+//--- Streaming timer calculation ---
+
+let prevTime = Date.now();
+let counter = 0;
+let total = 0;
+let cycles = 2000;
+
+console.log('\n>>> Wait around', Math.round(cycles * timer / 1000), 'seconds to see the actual streaming timer average ...\n');
+
+const streamTimer = setInterval ( () => {
+    
+    const timeNow = Date.now();
+    const difference = timeNow - prevTime;
+    total = total + difference;
+    prevTime = timeNow;
+
+    counter++;
+
+    if (counter == cycles) { 
+        clearInterval(streamTimer);
+        console.log('\n>>> Average streaming timer (should be close to 20 AND under 20.000):', total / counter);
+    };
+
+}, timer);
+
+//--- Websocket server (for Websockets from Vonage Voice API platform) ---
+
+app.ws('/socket', async (ws, req) => {
+
+  //-- debug only --
+  let ttsSeq = 0;
+
+  //-----
+
+  const peerUuid = req.query.peer_uuid;
+  
+  const webhookUrl = req.query.webhook_url;
+  console.log('>>> webhookUrl:', webhookUrl);
+  
+  let elevenLabsTimer;
+
+  console.log('>>> WebSocket from Vonage platform')
+  console.log('>>> peer call uuid:', peerUuid);
+
+  let wsVgOpen = true; // WebSocket to Vonage ready for binary audio payload?
+
+  // let startSpeech = false;
+  
+  let dropTtsChunks = false;
+  
+  // let newResponseStart = '';  // first sentence of OpenAI new streamed responsse
+
+  //-- audio recording files -- 
+  const audioTo11lFileName = './recordings/' + peerUuid + '_rec_to_11l_' + moment(Date.now()).format('YYYY_MM_DD_HH_mm_ss_SSS') + '.raw'; // using local time
+  const audioToVgFileName = './recordings/' + peerUuid + '_rec_to_vg_' + moment(Date.now()).format('YYYY_MM_DD_HH_mm_ss_SSS') + '.raw'; // using local time
+
+  if (recordCalls) { 
+
+    try {
+      await fsp.writeFile(audioTo11lFileName, '');
+    } catch(e) {
+      console.log("Error creating file", audioTo11lFileName, e);
+    }
+    console.log('File created:', audioTo11lFileName);
+
+    try {
+      await fsp.writeFile(audioToVgFileName, '');
+    } catch(e) {
+      console.log("Error creating file", audioToVgFileName, e);
+    }
+    console.log('File created:', audioToVgFileName);
+
+  }
+
+//-- stream audio to VG --
+
+  let payloadToVg = Buffer.alloc(0);
+  let streamToVgIndex = 0;
+  let lastTime = Date.now();
+  let nowTime;
+
+  //-
+
+  const streamTimer = setInterval ( () => {
+
+    if (payloadToVg.length != 0) {
+
+      const streamToVgPacket = Buffer.from(payloadToVg).subarray(streamToVgIndex, streamToVgIndex + 640);  // 640-byte packet for linear16 / 16 kHz
+      streamToVgIndex = streamToVgIndex + 640;
+
+      if (streamToVgPacket.length != 0) {
+        if (wsVgOpen && streamToVgPacket.length == 640) {
+            nowTime = Date.now();
+            
+            // console.log('>> interval:', nowTime - lastTime, 's');
+            process.stdout.write(".");
+            
+            ws.send(streamToVgPacket);
+            lastTime = nowTime;
+
+            if (recordCalls) {
+              try {
+                fsp.appendFile(audioToVgFileName, streamToVgPacket, 'binary');
+              } catch(error) {
+                console.log("error writing to file", audioToVg2FileName, error);
+              }
+            }  
+
+        };
+      } else {
+        streamToVgIndex = streamToVgIndex - 640; // prevent index from increasing for ever as it is beyond buffer current length
+      }
+
+    } 
+
+  }, timer);
+
+  //-- ElevenLabs connection ---
+
+  let ws11LabsOpen = false; // WebSocket to ElevenLabs ready for binary audio payload?
+
+  const elevenLabsWsUrl = "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=" + elevenLabsAgentId;
+
+  const elevenLabsWs = new webSocket(elevenLabsWsUrl, {
+    headers: { "xi-api-key": elevenLabsApiKey },
+  });
+
+  //--
+
+  elevenLabsWs.on('error', async (event) => {
+    console.log('>>> ElevenLabs WebSocket error:', event);
+  }); 
+
+  //--
+
+  elevenLabsWs.on('open', async () => {
+    console.log('>>> WebSocket to ElevenLabs opened');
+
+    // const initMessage = {
+    //     "type": "conversation_initiation_client_data",
+    //     "conversation_config_override": {
+    //       "agent": {
+    //         "prompt": {
+    //           "prompt": "You are a helpful assistant."
+    //         },
+    //         "first_message": "Hi, I'm Aria from ElevenLabs support. How can I help you today?",
+    //         "language": "en"
+    //       },
+    //       "tts": {
+    //         "voice_id": elevenLabsVoiceId
+    //       }
+    //     }
+    //     // "custom_llm_extra_body": {
+    //     //   "temperature": 0.7,
+    //     //   "max_tokens": 150
+    //     // },
+    //     // "dynamic_variables": {
+    //     //   "user_name": "John",
+    //     //   "account_type": "premium"
+    //     // }
+    //   };
+
+    // ws.send(JSON.stringify(initMessage));
+    
+    ws11LabsOpen = true;
+
+  });
+
+  //--
+      
+  elevenLabsWs.on('message', async(msg) =>  {
+
+    const data = JSON.parse(msg.toString());
+
+
+    switch(data.type) {
+
+    case 'audio':
+
+      const newAudioPayloadToVg = Buffer.from(data.audio_event.audio_base_64, 'base64');
+
+      console.log('\n>>>', Date.now(), 'Received audio payload from ElevenLabs:', newAudioPayloadToVg.length, 'bytes');
+
+      // if (startSpeech) {
+      //   dropTtsChunks = true;
+      // }
+
+      if (wsVgOpen) {
+
+        // // console.log('\ndropTtsChunks:', dropTtsChunks);
+
+        // if (dropTtsChunks) {
+
+        //   const textArray = data.alignment.chars;
+
+        //   // take first 15 chars or less
+        //   const textLength = Math.min(textArray.length, 15);
+
+        //   let receivedTtsText = '';
+
+        //   for (let i = 0; i < textLength; i++) {
+        //     receivedTtsText = receivedTtsText + textArray[i];
+        //   }
+
+        //   if (newResponseStart != '') {
+
+        //     const compareLength = Math.min(receivedTtsText.length, newResponseStart.slice(0, textLength).length); // sometimes one string has extra trailing space character
+
+        //     if ( receivedTtsText.slice(0, compareLength) == newResponseStart.slice(0, compareLength) ) {
+        //       dropTtsChunks = false;
+        //       payloadToVg = Buffer.concat([payloadToVg, newAudioPayloadToVg]);
+        //     } 
+
+        //   } 
+
+        // } else {
+
+        payloadToVg = Buffer.concat([payloadToVg, newAudioPayloadToVg]);
+      
+        // }
+
+      }
+
+      break;
+
+    //---
+
+    case 'user_transcript':
+
+      await axios.post(webhookUrl,  
+        {
+          "type": 'user_transcript',
+          "transcript": data.user_transcription_event.user_transcript,
+          "call_uuid": peerUuid
+        },
+        {
+        headers: {
+          "Content-Type": 'application/json'
+        }
+      });
+
+      console.log('\n', data);
+
+      break;
+
+    //---   
+
+    case 'agent_response':
+
+      await axios.post(webhookUrl,  
+        {
+          "type": 'agent_response',
+          "response": data.agent_response_event.agent_response,
+          "call_uuid": peerUuid
+        },
+        {
+        headers: {
+          "Content-Type": 'application/json'
+        }
+      });
+
+      console.log('\n', data);
+
+      break;
+
+    //---  
+
+    case 'interruption':
+    
+      // barge-in
+      payloadToVg = Buffer.alloc(0);  // reset stream buffer to VG
+      streamToVgIndex = 0;
+
+      console.log('\n', data);
+
+      break;
+
+    //---  
+
+    case 'ping':
+
+      // console.log('\n', data);
+
+      if (ws11LabsOpen) {
+
+        elevenLabsWs.send(JSON.stringify({
+          type: "pong",
+          event_id: data.ping_event.event_id
+        }));
+
+        // console.log('replied: { type: "pong", event_id:', data.ping_event.event_id, '}');
+
+      }  
+
+      break;
+
+
+    //---
+  
+    
+    default:
+
+      console.log('\n', data); 
+
+    }
+
+  });
+
+  //--
+
+  elevenLabsWs.on('close', async (msg) => {
+
+    // clearInterval(elevenLabsTimer);
+    
+    ws11LabsOpen = false; // stop sending audio payload to 11L platform
+
+    console.log('\n>>> ElevenLabs WebSocket closed')
+  
+  });
+
+ 
+  //---------------
+
+  ws.on('message', async (msg) => {
+    
+    if (typeof msg === "string") {
+    
+      console.log(">>> Vonage Websocket message:", msg);
+    
+    } else {
+
+      if (ws11LabsOpen) {
+
+        elevenLabsWs.send(JSON.stringify({
+          user_audio_chunk: msg.toString('base64')
+        }));
+
+        if (recordCalls) {
+          try {
+            fsp.appendFile(audioTo11lFileName, msg, 'binary');
+          } catch(error) {
+            console.log("error writing to file", audioTo11lFileName, error);
+          }
+        } 
+      
+      } 
+
+    }
+
+  });
+
+  //--
+
+  ws.on('close', async () => {
+
+    wsVgOpen = false;
+    console.log("\n>>> Vonage WebSocket closed");
+
+    elevenLabsWs.close(); // close WebSocket to ElevenLabs
+  });
+
+});
 
 //============= Processing inbound PSTN calls ===============
 
@@ -138,12 +510,12 @@ app.get('/answer', async(req, res) => {
   //--
 
   const nccoResponse = [
-    {                     //-- this talk action section is optional
-      "action": "talk",   
-      "text": "Connecting your call. You may now speak.",
-      "language": "en-US",
-      "style": 11
-    },
+    // {                     //-- this talk action section is optional
+    //   "action": "talk",   
+    //   "text": "Connecting your call. You may now speak.",
+    //   "language": "en-US",
+    //   "style": 11
+    // },
     {
       "action": "conversation",
       "name": "conf_" + uuid,
@@ -158,25 +530,26 @@ app.get('/answer', async(req, res) => {
 
 //------------
 
-app.post('/event', async(req, res) => {
+app.get('/event', async(req, res) => {
 
   res.status(200).send('Ok');
 
   //--
 
   const hostName = req.hostname;
-  const uuid = req.body.uuid;
+  const uuid = req.query.uuid;
 
   //--
 
-  if (req.body.type == 'transfer') {  // this is when the PSTN leg is effectively connected to the named conference
+  if (req.query.type == 'transfer') {  // this is when the PSTN leg is effectively connected to the named conference
 
     //-- Create WebSocket leg --
 
     // WebSocket connection URI
     // Custom data: participant identified as 'user1' in this example, could be 'agent', 'customer', 'patient', 'doctor', ...
     // PSTN call direction is 'inbound'
-    const wsUri = 'wss://' + processorServer + '/socket?participant=' + 'user1' +'&call_direction=inbound&peer_uuid=' + uuid + '&webhook_url=https://' + hostName + '/results';
+    
+    const wsUri = 'wss://' + hostName + '/socket?participant=' + 'user1' +'&call_direction=inbound&peer_uuid=' + uuid + '&webhook_url=https://' + hostName + '/results';
 
     vonage.voice.createOutboundCall({
       to: [{
@@ -191,7 +564,7 @@ app.post('/event', async(req, res) => {
       answer_url: ['https://' + hostName + '/ws_answer_1?original_uuid=' + uuid],
       answer_method: 'GET',
       event_url: ['https://' + hostName + '/ws_event_1?original_uuid=' + uuid],
-      event_method: 'POST'
+      event_method: 'GET'
       })
       .then(res => {
         console.log("\n>>> WebSocket create status:", res);
@@ -199,6 +572,18 @@ app.post('/event', async(req, res) => {
       .catch(err => console.error("\n>>> WebSocket create error:", err))  
 
   };
+
+});
+
+app.post('/event', async(req, res) => {
+
+  res.status(200).send('Ok');
+
+  //--
+
+  const uuid = req.body.uuid;
+
+  console.log('call ended: ', uuid);
 
 });
 
@@ -282,7 +667,7 @@ app.get('/answer_2', async(req, res) => {
   // WebSocket connection URI
   // Custom data: participant identified as 'user1' in this example, could be 'agent', 'customer', 'patient', 'doctor', '6tf623f9ffk4dcj91' ...
   // PSTN call direction is 'outbound'
-  const wsUri = 'wss://' + processorServer + '/socket?participant=' + 'user1' +'&call_direction=outbound&peer_uuid=' + uuid + '&caller_number=' + req.query.from + '&callee_number=' + req.query.to + '&webhook_url=https://' + hostName + '/results';
+  const wsUri = 'wss://' + hostName + '/socket?participant=' + 'user1' +'&call_direction=outbound&peer_uuid=' + uuid + '&caller_number=' + req.query.from + '&callee_number=' + req.query.to + '&webhook_url=https://' + hostName + '/results';
 
   const nccoResponse = [
     {
@@ -352,8 +737,8 @@ app.post('/event_2', async(req, res) => {
 
     // WebSocket connection URI
     // Custom data: participant identified as 'user1' in this example, could be 'agent', 'customer', 'patient', 'doctor', ...
-    // PSTN call direction is 'inbound'
-    const wsUri = 'wss://' + processorServer + '/socket?participant=' + 'user1' +'&call_direction=outbound&peer_uuid=' + uuid + '&webhook_url=https://' + hostName + '/results';
+    // PSTN call direction is 'outbound'
+    const wsUri = 'wss://' + hostName + '/socket?participant=' + 'user1' +'&call_direction=outbound&peer_uuid=' + uuid + '&webhook_url=https://' + hostName + '/results';
 
     vonage.voice.createOutboundCall({
       to: [{
@@ -409,7 +794,7 @@ app.post('/ws_event_2', async(req, res) => {
 
 app.post('/results', async(req, res) => {
 
-  console.log(req.body)
+  // console.log(req.body)
 
   res.status(200).send('Ok');
 
