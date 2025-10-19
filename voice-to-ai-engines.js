@@ -123,6 +123,10 @@ const streamTimer = setInterval ( () => {
 
 }, timer);
 
+//--- Active WebSocket sessions tracking ---
+// Store active sessions so we can close them when transfer is successful
+const activeSessions = new Map(); // key: call_uuid, value: { ws, elevenLabsWs, streamTimer, ws11LabsOpen }
+
 //--- Websocket server (for Websockets from Vonage Voice API platform) ---
 
 app.ws('/socket', async (ws, req) => {
@@ -223,6 +227,16 @@ app.ws('/socket', async (ws, req) => {
 
   const elevenLabsWs = new webSocket(elevenLabsWsUrl, {
     headers: { "xi-api-key": elevenLabsApiKey },
+  });
+
+  // Store this session in the active sessions map
+  activeSessions.set(peerUuid, {
+    ws: ws,
+    elevenLabsWs: elevenLabsWs,
+    streamTimer: streamTimer,
+    ws11LabsOpen: () => ws11LabsOpen,
+    setWs11LabsOpen: (value) => { ws11LabsOpen = value; },
+    transferInitiated: false
   });
 
   //--
@@ -382,27 +396,32 @@ app.ws('/socket', async (ws, req) => {
       const extension = data.client_tool_call.parameters.extension;
       
       console.log('\n', data);
+      console.log('>>> Transfer requested to extension:', extension);
 
-      ws11LabsOpen = false
-
-      // Clean up resources and close WebSocket connections
-      clearInterval(streamTimer); // Clear the streaming timer
-      if (elevenLabsWs.readyState === webSocket.OPEN) {
-        elevenLabsWs.close();
+      // Mark this session as transfer initiated
+      const session = activeSessions.get(peerUuid);
+      if (session) {
+        session.transferInitiated = true;
       }
-      ws.close();
-      
-      await axios.post(webhookUrl,  
+
+      // The /results endpoint will handle the outbound call and manage WebSocket cleanup
+      axios.post(webhookUrl,  
         {
           "type": 'client_tool_call',
           "extension": extension,
           "call_uuid": peerUuid
         },
         {
-        headers: {
-          "Content-Type": 'application/json'
+          headers: {
+            "Content-Type": 'application/json',
+            "Connection": "close"
+          },
+          httpAgent: new (require('http').Agent)({ keepAlive: false }),
+          httpsAgent: new (require('https').Agent)({ keepAlive: false })
         }
-      });
+      )
+      .then(() => console.log('>>> Webhook notification sent'))
+      .catch(error => console.error('>>> Error sending webhook:', error.message));
 
       break;
 
@@ -489,6 +508,9 @@ app.ws('/socket', async (ws, req) => {
 
     clearInterval(streamTimer); // Clean up the streaming timer
     elevenLabsWs.close(); // close WebSocket to ElevenLabs
+    
+    // Remove this session from active sessions
+    activeSessions.delete(peerUuid);
   });
 
 });
@@ -808,24 +830,47 @@ app.post('/results', async(req, res) => {
 
   // console.log(req.body)
   if (req.body.type == 'client_tool_call') {
-    console.log('>>> Transferring call to right agent');
-    vonage.voice.createOutboundCall({
-      to: [{
-        type: 'vbc',
-        extension: req.body.extension
-      }],
-      from: {
-        type: 'phone',
-        number: '12995550101' // value does not matter
-      },
-      answer_url: ['https://' + req.hostname + '/ws_answer_3?original_uuid=' + req.body.call_uuid],
-      answer_method: 'GET',
-      event_url: ['https://' + req.hostname + '/ws_event_3?original_uuid=' + req.body.call_uuid],
-      event_method: 'POST'
-    })
-    .then(res => console.log(">>> Outgoing PSTN call status:", res))
-    .catch(err => console.error(">>> Outgoing PSTN call error:", err))
-    return;
+    console.log('>>> Transferring call to extension:', req.body.extension);
+    
+    try {
+      const result = await vonage.voice.createOutboundCall({
+        to: [{
+          type: 'vbc',
+          extension: req.body.extension
+        }],
+        from: {
+          type: 'phone',
+          number: '12995550101' // value does not matter
+        },
+        answer_url: ['https://' + req.hostname + '/ws_answer_3?original_uuid=' + req.body.call_uuid],
+        answer_method: 'GET',
+        event_url: ['https://' + req.hostname + '/ws_event_3?original_uuid=' + req.body.call_uuid],
+        event_method: 'POST'
+      });
+      
+      console.log(">>> Outgoing call initiated:", result.uuid);
+      res.status(200).json({ success: true, call_uuid: result.uuid });
+      return;
+      
+    } catch (err) {
+      console.error(">>> Outgoing call error:", err);
+      
+      // If outbound call fails, close the original WebSockets
+      const session = activeSessions.get(req.body.call_uuid);
+      if (session) {
+        console.log('>>> Outbound call failed, closing original session');
+        session.setWs11LabsOpen(false);
+        clearInterval(session.streamTimer);
+        if (session.elevenLabsWs.readyState === webSocket.OPEN) {
+          session.elevenLabsWs.close();
+        }
+        session.ws.close();
+        activeSessions.delete(req.body.call_uuid);
+      }
+      
+      res.status(500).json({ success: false, error: err.message });
+      return;
+    }
   }
 
   res.status(200).send('Ok');
@@ -846,6 +891,98 @@ app.get('/ws_answer_3', async(req, res) => {
 
 app.post('/ws_event_3', async(req, res) => {
   res.status(200).send('Ok');
+  
+  const originalUuid = req.query.original_uuid;
+  
+  // Get the original session
+  const session = activeSessions.get(originalUuid);
+  
+  if (!session) {
+    console.log('>>> No active session found for:', originalUuid);
+    return;
+  }
+  
+  // Check if transfer was initiated for this session
+  if (!session.transferInitiated) {
+    return;
+  }
+
+  // Handle transfer event - agent joined the call
+  if (req.body.type == 'transfer') {
+    console.log('>>> Agent joined the call - closing original session immediately');
+    
+    // Clear any pending timers from previous event handlers
+    if (session.finalMessageTimer) {
+      clearTimeout(session.finalMessageTimer);
+      console.log('>>> Cleared pending final message timer');
+    }
+    if (session.closeTimer) {
+      clearTimeout(session.closeTimer);
+      console.log('>>> Cleared pending close timer');
+    }
+    
+    try {
+      session.setWs11LabsOpen(false);
+      clearInterval(session.streamTimer);
+      if (session.elevenLabsWs.readyState === webSocket.OPEN) {
+        session.elevenLabsWs.close();
+      }
+      session.ws.close();
+      activeSessions.delete(originalUuid);
+      console.log('>>> Original session closed successfully');
+    } catch (error) {
+      console.error('>>> Error closing original session:', error);
+    }
+    return;
+  }
+
+  // Send final message for other events (only once)
+  if (session.elevenLabsWs.readyState === webSocket.OPEN && session.ws11LabsOpen() && !session.sentfinalmessage) {
+    try {
+      session.sentfinalmessage = true;
+      
+      // Store timer references so we can cancel them if transfer event arrives
+      session.finalMessageTimer = setTimeout(() => {
+        console.log('>>> Sending final message to ElevenLabs');
+        
+        // Check if session still exists (might have been closed by transfer event)
+        if (!activeSessions.has(originalUuid)) {
+          console.log('>>> Session already closed, skipping final message');
+          return;
+        }
+        
+        session.elevenLabsWs.send(JSON.stringify({
+          type: "user_message",
+          text: "Did you get connected me to the agent?"
+        }));
+        
+        console.log('>>> Sent final message to ElevenLabs');
+        
+        // Second timer for closing
+        session.closeTimer = setTimeout(() => {
+          console.log('>>> Closing original session after final message');
+          
+          // Check if session still exists
+          if (!activeSessions.has(originalUuid)) {
+            console.log('>>> Session already closed, skipping');
+            return;
+          }
+          
+          session.setWs11LabsOpen(false);
+          clearInterval(session.streamTimer);
+          if (session.elevenLabsWs.readyState === webSocket.OPEN) {
+            session.elevenLabsWs.close();
+          }
+          session.ws.close();
+          activeSessions.delete(originalUuid);
+        }, 10000);
+        
+      }, 5000);
+      
+    } catch (error) {
+      console.error('>>> Error sending final message to ElevenLabs:', error);
+    }
+  }
 });
 
 
