@@ -64,8 +64,6 @@ const appId = process.env.APP_ID; // used by tokenGenerate
 const privateKey = fs.readFileSync('./.private.key'); // used by tokenGenerate
 const { tokenGenerate } = require('@vonage/jwt');
 
-const vonageNr = new Vonage(credentials, {} );  
-
 const region = process.env.API_REGION.substring(4, 6);
 // console.log("region:", region);
 const apiBaseUrl = "https://api-" + region +".vonage.com";
@@ -274,7 +272,6 @@ app.ws('/socket', async (ws, req) => {
 
     const data = JSON.parse(msg.toString());
 
-
     switch(data.type) {
 
     case 'audio':
@@ -376,6 +373,38 @@ app.ws('/socket', async (ws, req) => {
       console.log('\n', data);
 
       break;
+    
+    //---  
+
+    case 'client_tool_call':
+      
+      // Store the tool call parameters for later use
+      const extension = data.client_tool_call.parameters.extension;
+      
+      console.log('\n', data);
+
+      ws11LabsOpen = false
+
+      // Clean up resources and close WebSocket connections
+      clearInterval(streamTimer); // Clear the streaming timer
+      if (elevenLabsWs.readyState === webSocket.OPEN) {
+        elevenLabsWs.close();
+      }
+      ws.close();
+      
+      await axios.post(webhookUrl,  
+        {
+          "type": 'client_tool_call',
+          "extension": extension,
+          "call_uuid": peerUuid
+        },
+        {
+        headers: {
+          "Content-Type": 'application/json'
+        }
+      });
+
+      break;
 
     //---  
 
@@ -458,6 +487,7 @@ app.ws('/socket', async (ws, req) => {
     wsVgOpen = false;
     console.log("\n>>> Vonage WebSocket closed");
 
+    clearInterval(streamTimer); // Clean up the streaming timer
     elevenLabsWs.close(); // close WebSocket to ElevenLabs
   });
 
@@ -510,12 +540,6 @@ app.get('/answer', async(req, res) => {
   //--
 
   const nccoResponse = [
-    // {                     //-- this talk action section is optional
-    //   "action": "talk",   
-    //   "text": "Connecting your call. You may now speak.",
-    //   "language": "en-US",
-    //   "style": 11
-    // },
     {
       "action": "conversation",
       "name": "conf_" + uuid,
@@ -661,21 +685,9 @@ app.get('/call', async(req, res) => {
 
 app.get('/answer_2', async(req, res) => {
 
-  const  hostName = req.hostname;
-  const uuid = req.query.uuid;   
-
-  // WebSocket connection URI
-  // Custom data: participant identified as 'user1' in this example, could be 'agent', 'customer', 'patient', 'doctor', '6tf623f9ffk4dcj91' ...
-  // PSTN call direction is 'outbound'
-  const wsUri = 'wss://' + hostName + '/socket?participant=' + 'user1' +'&call_direction=outbound&peer_uuid=' + uuid + '&caller_number=' + req.query.from + '&callee_number=' + req.query.to + '&webhook_url=https://' + hostName + '/results';
+  const uuid = req.query.uuid;
 
   const nccoResponse = [
-    {
-      "action": "talk",
-      "text": "Hello. This is a call from your preferred provider. You may now speak.",
-      "language": "en-US",
-      "style": 11
-    },
     {
       "action": "conversation",
       "name": "conf_" + uuid,
@@ -795,10 +807,47 @@ app.post('/ws_event_2', async(req, res) => {
 app.post('/results', async(req, res) => {
 
   // console.log(req.body)
+  if (req.body.type == 'client_tool_call') {
+    console.log('>>> Transferring call to right agent');
+    vonage.voice.createOutboundCall({
+      to: [{
+        type: 'vbc',
+        extension: req.body.extension
+      }],
+      from: {
+        type: 'phone',
+        number: '12995550101' // value does not matter
+      },
+      answer_url: ['https://' + req.hostname + '/ws_answer_3?original_uuid=' + req.body.call_uuid],
+      answer_method: 'GET',
+      event_url: ['https://' + req.hostname + '/ws_event_3?original_uuid=' + req.body.call_uuid],
+      event_method: 'POST'
+    })
+    .then(res => console.log(">>> Outgoing PSTN call status:", res))
+    .catch(err => console.error(">>> Outgoing PSTN call error:", err))
+    return;
+  }
 
   res.status(200).send('Ok');
 
 });
+
+app.get('/ws_answer_3', async(req, res) => {
+  const ncco = [
+    {
+      "action": "conversation",
+      "name": "conf_" + req.query.original_uuid,
+      "startOnEnter": true,
+      "endOnExit": true
+    }
+  ];
+  return res.status(200).json(ncco);
+});
+
+app.post('/ws_event_3', async(req, res) => {
+  res.status(200).send('Ok');
+});
+
 
 //-------------
 
@@ -816,7 +865,7 @@ app.post('/rtc', async(req, res) => {
       console.log('req.body.body.destination_url', req.body.body.destination_url);
       console.log('req.body.body.recording_id', req.body.body.recording_id);
 
-      await vonageNr.voice.downloadRecording(req.body.body.destination_url, './post-call-data/' + req.body.body.recording_id + '_' + req.body.body.channel.id + '.mp3');
+      await vonage.voice.downloadRecording(req.body.body.destination_url, './post-call-data/' + req.body.body.recording_id + '_' + req.body.body.channel.id + '.mp3');
  
       break;
 
@@ -825,7 +874,7 @@ app.post('/rtc', async(req, res) => {
       console.log('req.body.body.transcription_url', req.body.body.transcription_url);
       console.log('req.body.body.recording_id', req.body.body.recording_id);
 
-      await vonageNr.voice.downloadTranscription(req.body.body.transcription_url, './post-call-data/' + req.body.body.recording_id + '.txt');  
+      await vonage.voice.downloadTranscription(req.body.body.transcription_url, './post-call-data/' + req.body.body.recording_id + '.txt');  
 
       break;      
     
