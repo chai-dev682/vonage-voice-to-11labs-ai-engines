@@ -15,6 +15,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Cloud Runtime CLI
+        uses: Vonage/cloud-runtime-cli@main
+
       - name: Deploy to Vonage Cloud Hub
         env:
           API_KEY: ${{ secrets.VONAGE_API_KEY }}
