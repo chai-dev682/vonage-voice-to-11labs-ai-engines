@@ -1,0 +1,30 @@
+name: Deploy to Vonage Cloud Runtime (VCR)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Vonage Cloud Hub
+        env:
+          API_KEY=${{ secrets.VONAGE_API_KEY }}
+          API_SECRET=${{ secrets.VONAGE_API_SECRET }}
+          APP_ID=${{ secrets.VONAGE_APP_ID }}
+          SERVICE_PHONE_NUMBER=${{ secrets.SERVICE_PHONE_NUMBER }}
+          API_REGION=${{ secrets.API_REGION }}
+          MAX_CALL_DURATION=${{ secrets.MAX_CALL_DURATION }}
+          RECORD_CALLS=${{ secrets.RECORD_CALLS }}
+          ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_AGENT_ID=${{ secrets.ELEVENLABS_AGENT_ID }}
+        run: |
+          vonage deploy

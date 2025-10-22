@@ -1,0 +1,73 @@
+project:
+    name: voice-to-ai-engines
+instance:
+    name: production
+    runtime: nodejs22
+    region: aws.use1
+    application-id: 5d0df7f8-469a-4a54-933d-7e9469c6b49f
+    entrypoint: [node, voice-to-ai-engines.js]
+    capabilities:
+        - voice
+    environment:
+        - name: API_KEY
+          secret: API_KEY
+        - name: API_SECRET
+          secret: API_SECRET
+        - name: APP_ID
+          secret: APP_ID
+        - name: SERVICE_PHONE_NUMBER
+          secret: SERVICE_PHONE_NUMBER
+        - name: API_REGION
+          secret: API_REGION
+        - name: MAX_CALL_DURATION
+          secret: MAX_CALL_DURATION
+        - name: RECORD_CALLS
+          secret: RECORD_CALLS
+        - name: ELEVENLABS_API_KEY
+          secret: ELEVENLABS_API_KEY
+        - name: ELEVENLABS_AGENT_ID
+          secret: ELEVENLABS_AGENT_ID
+    secrets:
+        - API_KEY
+        - API_SECRET
+        - APP_ID
+        - SERVICE_PHONE_NUMBER
+        - API_REGION
+        - MAX_CALL_DURATION
+        - RECORD_CALLS
+        - ELEVENLABS_API_KEY
+        - ELEVENLABS_AGENT_ID
+debug:
+    name: debug
+    application-id: 884c2b45-c20a-4d6b-8afe-24ce29ba6f93
+    environment:
+        - name: API_KEY
+          secret: API_KEY
+        - name: API_SECRET
+          secret: API_SECRET
+        - name: APP_ID
+          secret: APP_ID
+        - name: SERVICE_PHONE_NUMBER
+          secret: SERVICE_PHONE_NUMBER
+        - name: API_REGION
+          secret: API_REGION
+        - name: MAX_CALL_DURATION
+          secret: MAX_CALL_DURATION
+        - name: RECORD_CALLS
+          secret: RECORD_CALLS
+        - name: ELEVENLABS_API_KEY
+          secret: ELEVENLABS_API_KEY
+        - name: ELEVENLABS_AGENT_ID
+          secret: ELEVENLABS_AGENT_ID
+    secrets:
+        - API_KEY
+        - API_SECRET
+        - APP_ID
+        - SERVICE_PHONE_NUMBER
+        - API_REGION
+        - MAX_CALL_DURATION
+        - RECORD_CALLS
+        - ELEVENLABS_API_KEY
+        - ELEVENLABS_AGENT_ID
+    entrypoint: [node, voice-to-ai-engines.js]
+    preserve-data: false

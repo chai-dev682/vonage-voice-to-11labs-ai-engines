@@ -41,7 +41,7 @@ const credentials = new Auth({
   apiKey: process.env.API_KEY,
   apiSecret: process.env.API_SECRET,
   applicationId: process.env.APP_ID,
-  privateKey: './.private.key'    // private key file name with a leading dot 
+  privateKey: process.env.VCR_PRIVATE_KEY || './.private.key'    // private key file name with a leading dot 
 });
 
 const apiRegion = "https://" + process.env.API_REGION;
