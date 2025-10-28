@@ -123,6 +123,44 @@ const streamTimer = setInterval ( () => {
 
 }, timer);
 
+//--- Language Routing Map ---
+// Maps default extensions to language-specific extensions
+const languageRoutingMap = {
+  '8000': {
+    'english': '8000',
+    'spanish': '8001',
+    'french': '8003',
+    'russian': '8004',
+    'chinese': '316'
+  }
+};
+
+// Function to get routed extension based on language
+function getRoutedExtension(extension, language) {
+  // Normalize inputs
+  const normalizedExtension = String(extension);
+  const normalizedLanguage = language ? String(language).toLowerCase() : 'english';
+  
+  // Check if extension is in language routing map
+  if (languageRoutingMap[normalizedExtension]) {
+    const routedExtension = languageRoutingMap[normalizedExtension][normalizedLanguage];
+    
+    if (routedExtension) {
+      console.log(`>>> Language routing: ${normalizedExtension} + ${normalizedLanguage} -> ${routedExtension}`);
+      return routedExtension;
+    } else {
+      // Language not found, default to English or the original extension
+      const defaultExtension = languageRoutingMap[normalizedExtension]['english'] || normalizedExtension;
+      console.log(`>>> Language "${normalizedLanguage}" not found, using default: ${defaultExtension}`);
+      return defaultExtension;
+    }
+  }
+  
+  // Extension not in routing map, return as-is
+  console.log(`>>> Extension ${normalizedExtension} not in language routing map, using as-is`);
+  return normalizedExtension;
+}
+
 //--- Active WebSocket sessions tracking ---
 // Store active sessions so we can close them when transfer is successful
 const activeSessions = new Map(); // key: call_uuid, value: { ws, elevenLabsWs, streamTimer, ws11LabsOpen }
@@ -392,11 +430,18 @@ app.ws('/socket', async (ws, req) => {
 
     case 'client_tool_call':
       
-      // Store the tool call parameters for later use
-      const extension = data.client_tool_call.parameters.extension;
+      // Extract tool call parameters
+      const requestedExtension = data.client_tool_call.parameters.extension;
+      const language = data.client_tool_call.parameters.language;
       
       console.log('\n', data);
-      console.log('>>> Transfer requested to extension:', extension);
+      console.log('>>> Transfer requested to extension:', requestedExtension);
+      console.log('>>> Language:', language || 'not specified (defaulting to English)');
+
+      // Apply language routing
+      const routedExtension = getRoutedExtension(requestedExtension, language);
+      
+      console.log('>>> Final routed extension:', routedExtension);
 
       // Mark this session as transfer initiated
       const session = activeSessions.get(peerUuid);
@@ -408,7 +453,7 @@ app.ws('/socket', async (ws, req) => {
       axios.post(webhookUrl,  
         {
           "type": 'client_tool_call',
-          "extension": extension,
+          "extension": routedExtension,
           "call_uuid": peerUuid
         },
         {
@@ -1022,6 +1067,56 @@ app.post('/rtc', async(req, res) => {
 
 });
  
+
+//--- Language Routing Map Management Endpoints ---
+
+// GET: Retrieve the current language routing map
+app.get('/language-routing', async(req, res) => {
+  res.status(200).json({
+    success: true,
+    languageRoutingMap: languageRoutingMap
+  });
+});
+
+// POST: Batch update - Replace entire language routing map
+app.post('/language-routing', async(req, res) => {
+  const newMap = req.body;
+  
+  if (!newMap || typeof newMap !== 'object') {
+    return res.status(400).json({
+      success: false,
+      message: 'Request body must be an object with extension mappings'
+    });
+  }
+  
+  // Validate structure
+  for (const [extension, routes] of Object.entries(newMap)) {
+    if (typeof routes !== 'object' || routes === null) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid routes for extension ${extension}. Must be an object with language mappings.`
+      });
+    }
+  }
+  
+  // Clear the current map
+  for (const key in languageRoutingMap) {
+    delete languageRoutingMap[key];
+  }
+  
+  // Add all new extensions
+  for (const [extension, routes] of Object.entries(newMap)) {
+    languageRoutingMap[extension] = routes;
+  }
+  
+  res.status(200).json({
+    success: true,
+    message: 'Language routing map updated successfully',
+    languageRoutingMap: languageRoutingMap
+  });
+  
+  console.log('>>> Language routing map batch updated:', languageRoutingMap);
+});
 
 //--- If this application is hosted on VCR (Vonage Cloud Runtime) serverless infrastructure --------
 
