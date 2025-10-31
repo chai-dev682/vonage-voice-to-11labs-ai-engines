@@ -1,6 +1,6 @@
-# Sample application using Vonage Voice API to connect Voice Calls to AI Engines
+# Vonage Voice API to ElevenLabs Conversational AI Integration
 
-You may use this Voice API application to connect voice calls to AI Engines using one of the Connectors listed in the Set up section.
+This Vonage Voice API application connects voice calls directly to ElevenLabs Conversational AI agents, enabling natural voice conversations with AI-powered agents.
 
 Voice calls may be:</br>
 inbound/outbound,</br>
@@ -8,132 +8,336 @@ PSTN calls (cell phones, landline phones, fixed phones),</br>
 SIP calls with [SIP endpoints](https://developer.vonage.com/en/voice/voice-api/concepts/endpoints#session-initiation-protocol-sip) or [Programmable SIP](https://developer.vonage.com/en/voice/voice-api/concepts/programmable-sip),</br>
 [WebRTC](https://developer.vonage.com/en/vonage-client-sdk/overview) calls (iOS/Android/Web Javascript clients).</br>
 
-## About this sample Voice API application
+## About this application
 
-This application connects voice calls to a Connector server by using the [WebSockets feature](https://developer.vonage.com/en/voice/voice-api/concepts/websockets) of Vonage Voice API.</br>
+This application establishes real-time audio streaming between voice calls and ElevenLabs Conversational AI using the [WebSockets feature](https://developer.vonage.com/en/voice/voice-api/concepts/websockets) of Vonage Voice API.
 
-When a voice call is established, this Voice API application triggers a WebSocket connection from Vonage platform to the Connector server which streams audio in one or both directions between the voice call and the AI engines. 
+When a voice call is established, the application:
+- Creates a WebSocket connection to ElevenLabs Conversational AI API
+- Streams audio bidirectionally between the caller and the AI agent
+- Handles transcriptions, agent responses, and interruptions
+- Supports call transfer to VBC extensions via client tool calls
+- Includes language routing for multi-language support
 
-Instead of using this sample Voice API application, you may use your own existing Voice API application to establish WebSockets with the Connector server to connect your managed voice calls with the AI engines.
+## Features
 
-Your new or existing Voice API application may be written with any programming language using [server SDKs](https://developer.vonage.com/en/tools) or with direct [REST API](https://developer.vonage.com/en/api/voice) calls.
-
-You may instead have your Vonage [Video API WebRTC Clients](https://developer.vonage.com/en/tools) establish sessions with AI engines through the Video API's [Audio Connector](https://developer.vonage.com/en/video/guides/audio-connector) and the peer Connector server as listed in the next section, in which case this Voice API application is not needed.
+- **Real-time Audio Streaming**: Bidirectional audio streaming at 16kHz linear PCM
+- **Call Transfer**: Transfer calls to VBC extensions based on AI agent tool calls
+- **Language Routing**: Route transfers to language-specific extensions
+- **Call Recording**: Optional call leg recording with webhook support
+- **Transcriptions**: Receive user transcripts and agent responses via webhook
+- **Interruption Handling**: Supports conversation barge-in
 
 ## Set up
 
-### Set up the sample Connector server - Host server public hostname and port
+### Prerequisites
 
-First set up the Connector server (aka middleware server) from one of the following repositories</br>
-https://github.com/nexmo-se/dg-oai-11l-connector,</br>
-https://github.com/nexmo-se/elevenlabs-agent-ws-connector,</br>
-https://github.com/nexmo-se/deepgram-connector,</br>
-https://github.com/nexmo-se/openai-realtime-connector,</br>
-https://github.com/nexmo-se/websocket-server-variant-3.</br>
+1. **ElevenLabs Account**: Sign up at [ElevenLabs](https://elevenlabs.io) and create a Conversational AI agent
+   - Obtain your **ElevenLabs API Key** from your account settings
+   - Obtain your **ElevenLabs Agent ID** from your Conversational AI agent configuration
 
-_Note:
-The current repository https://github.com/nexmo-se/vonage-deepgram-voice-agent combines both the sample Voice API application and the Connector application in one server program.<br>
-As of now, you may use only the Connector part of it with your existing Voice API application to connect to Deepgram Voice Agent. Change its listening port from 8000 to 6000.<br>
-Soon, the standalone Connector application for Deepgram Voice Agent will be created like the other Connector repositories listed above._
+2. **Vonage Account**: [Log in](https://dashboard.nexmo.com/sign-in) or [sign up](https://ui.idp.vonage.com/ui/auth/registration) for a Vonage APIs account
 
+3. **Public Server Access**: For local development, use [ngrok](https://ngrok.com) to expose your local server
 
-Default local (not public!) of any one of the Connector servers `port` is: 6000.
+### Set up ngrok (for local deployment)
 
-If you plan to test using a `Local deployment`, you may use ngrok (an Internet tunneling service) for both<br>
-this Voice API application<br>
-and the Connector application<br>
-with [multiple ngrok tunnels](https://ngrok.com/docs/agent/config/v2/#tunnel-configurations).
+If you plan to test using a `Local deployment`, you'll need ngrok (an Internet tunneling service) to expose your local server.
 
-To do that, [install ngrok](https://ngrok.com/downloads).<br>
-Log in or sign up with [ngrok](https://ngrok.com/),<br>
-from the ngrok web UI menu, follow the **Setup and Installation** guide.
+[Install ngrok](https://ngrok.com/downloads), then log in or sign up with [ngrok](https://ngrok.com/).<br>
+From the ngrok web UI menu, follow the **Setup and Installation** guide.
 
-Set up two tunnels,<br>
-one to forward to the local port 6000 (as the Connector application will be listening on port 6000),<br>
-the other one to the local port 8000 for this Voice API application,<br>
-see this [sample yaml configuration file](https://ngrok.com/docs/agent/config/v2/#define-two-tunnels-named-httpbin-and-demo), but it needs port 6000 and 8000 as actual values,<br>
-depending if you have a paid ngrok account or not, you may or may not be able to set (static) domain names.
+Set up a tunnel to forward to local port 8000 (default port for this application):<br>
+```bash
+ngrok http 8000
+```
 
-Start ngrok to start both tunnels that forward to local ports 6000 and 8000, e.g.<br>
-`ngrok start httpbin demo`
+Please take note of the ngrok public URL (e.g., `xxxxxxxx.ngrok.xxx`) as it will be needed for your Vonage application webhooks.<br>
+The URL should not have a trailing `/`.
 
-please take note of the ngrok Enpoint URL that forwards to local port 6000 as it will be needed here for this Voice API application environment variable as **`PROCESSOR_SERVER`** in one of the next sections, that URL looks like:<br>
-`xxxxxxxx.ngrok.xxx` (for ngrok),<br>
-or `myserver.mycompany.com:32000` (public host name and port of your Connector application server)<br>
-no `port` is necessary with ngrok as public host name,<br>
-that host name to specify must not have leading protocol text such as `https://`, `wss://`, nor trailing `/`.
+### Set up your Vonage Voice API application
 
-### Set up your Vonage Voice API application credentials and phone number
+1. Go to [Your applications](https://dashboard.nexmo.com/applications), access an existing application or [+ Create a new application](https://dashboard.nexmo.com/applications/new)
 
-[Log in to your](https://dashboard.nexmo.com/sign-in) or [sign up for a](https://ui.idp.vonage.com/ui/auth/registration) Vonage APIs account.
+2. Under **Capabilities** section (click [Edit] if you do not see this section):
 
-Go to [Your applications](https://dashboard.nexmo.com/applications), access an existing application or [+ Create a new application](https://dashboard.nexmo.com/applications/new).
+3. **Enable Voice**
+   - **Answer URL**: Leave HTTP **GET**, and enter</br>
+     `https://<your-server>/answer`</br>
+     Example with ngrok: `https://xxxxxxxx.ngrok.xxx/answer`
+   
+   - **Event URL**: Select HTTP **POST**, and enter</br>
+     `https://<your-server>/event`</br>
+     Example with ngrok: `https://xxxxxxxx.ngrok.xxx/event`
 
-Under Capabilities section (click on [Edit] if you do not see this section):
+4. **Enable RTC (In-app voice & messaging)** if you want to use call recording features
+   - **RTC Event URL**: Enter</br>
+     `https://<your-server>/rtc`</br>
+     Example with ngrok: `https://xxxxxxxx.ngrok.xxx/rtc`
 
-**Enable** Voice
-- Under Answer URL, leave HTTP GET, and enter</br>
-https://\<host\>:\<port\>/answer</br>
-(replace \<host\> and \<port\> with the public host name and if necessary public port of the server where this sample application is running)</br>
-- Under Event URL, **select** HTTP POST, and enter</br>
-https://\<host\>:\<port\>/event</br>
-(replace \<host\> and \<port\> with the public host name and if necessary public port of the server where this sample application is running)</br>
-Note: If you are using ngrok for this sample application, the answer URL and event URL look like:</br>
-https://yyyyyyyy.ngrok.xxx/answer</br>
-https://yyyyyyyy.ngrok.xxx/event</br> 	
-- Click on [Generate public and private key] if you did not yet create or want new ones, save the private key file in this application folder as .private.key (leading dot in the file name).</br>
-- Click on [Generate new application] if you've just created the application.</br></br>
+5. **Generate Keys**
+   - Click [Generate public and private key]
+   - Save the private key file in this application folder as `.private.key` (note the leading dot)
+   - Click [Generate new application] if you've just created the application
+   - **IMPORTANT**: If updating an existing application, click [Save changes]
 
-**IMPORTANT**: If you already had an existing application and just created a new key set, do not forget to click on [Save changes] at the bottom of the screen.</br></br>
+6. **Link a Phone Number**
+   - Link a phone number to this application if none has been linked
 
-- Link a phone number to this application if none has been linked to the application.</br>
+7. **Collect Required Credentials**
+   - **Application ID** (from the application page)
+   - **Phone number** linked to your application
+   - **API Key** from [Settings](https://dashboard.nexmo.com/settings)
+   - **API Secret** from [Settings](https://dashboard.nexmo.com/settings) (not signature secret)
+   - **API Region** - select the region where your application was created (e.g., `api-us-4.vonage.com`)
 
-Please take note of your **application ID** and the **linked phone number** (as they are needed in the very next section).
+### Environment Configuration
 
-For the next steps, you will need:</br>
-- Your [Vonage API key](https://dashboard.nexmo.com/settings) (as **`API_KEY`**)</br>
-- Your [Vonage API secret](https://dashboard.nexmo.com/settings), not signature secret, (as **`API_SECRET`**)</br>
-- Your `application ID` (as **`APP_ID`**),</br>
-- The **`phone number linked`** to your application (as **`SERVICE_PHONE_NUMBER`**), your phone will **call that number**.</br>
+1. **Copy the example environment file**
+```bash
+cp .env-example .env
+```
 
-### Local deployment
+2. **Update the `.env` file with your credentials:**
 
-Copy or rename .env-example to .env<br>
-Update parameters in .env file<br>
-Have Node.js installed on your system, this application has been tested with Node.js version 22.16<br>
+```bash
+#==== Vonage API ====
+API_KEY=your_vonage_api_key
+API_SECRET=your_vonage_api_secret
+APP_ID=your_vonage_application_id
+SERVICE_PHONE_NUMBER=12995551212  # Your Vonage number (E.164 without '+')
 
-Install node modules with the command:<br>
- ```bash
+# API Region - uncomment the one matching your application region
+API_REGION=api-us-4.vonage.com
+
+#==== Other parameters ====
+MAX_CALL_DURATION=300  # Maximum duration for outbound calls (seconds)
+RECORD_CALLS=false     # Set to 'true' to enable call recording
+
+#==== ElevenLabs parameters ====
+ELEVENLABS_API_KEY=your_elevenlabs_api_key
+ELEVENLABS_AGENT_ID=your_elevenlabs_agent_id
+```
+
+3. **Place your Vonage private key file**
+   - Save your private key as `.private.key` in the application root directory
+
+### Installation and Running
+
+1. **Install Node.js**
+   - This application has been tested with Node.js version 22.16
+   - Download from [nodejs.org](https://nodejs.org)
+
+2. **Install dependencies**
+```bash
 npm install
 ```
 
-Launch the application:<br>
+3. **Start the application**
 ```bash
 node voice-to-ai-engines
 ```
-Default local (not public!) of this application server `port` is: 8000.
 
-### How to make PSTN calls
+The application will start on port **8000** by default (can be changed with `PORT` environment variable).
 
-#### Inbound calling
+## Usage
 
-Call the **`phone number linked`** to your application to get connected to the AI engine(s).
+### Making Calls
 
-#### Outbound calling
+#### Inbound Calls
 
-To manually trigger an outbound PSTN call to a number, open a web browser, enter the address:<br>
+Simply call the phone number linked to your Vonage application. The caller will be automatically connected to your ElevenLabs Conversational AI agent.
 
-_https://\<server-address\>/call?number=\<number\>_<br>
+#### Outbound Calls
 
-the \<number\> must be in E.164 format without leading '+' sign, nor space, '-', '.' characters
+To manually trigger an outbound call, open a web browser and enter:
 
-for example, it looks like
+```
+https://<server-address>/call?number=<number>
+```
 
-https://xxxx.ngrok.xxx/call?number=12995551212
+- `<number>` must be in E.164 format without leading '+' sign, spaces, '-', or '.' characters
+- Example: `https://xxxx.ngrok.xxx/call?number=12995551212`
 
-Upon answering the call, the callee will get connected to the AI engine(s).
+You can also programmatically initiate outbound calls by making a GET request to the `/call` endpoint.
 
-Of course, you may programmatically initiate outbound calls by using the API call listed in the corresponding webhook section of the program _voice-to-ai-engines.js_ (i.e. `/call` route).
+### Call Transfer to VBC Extensions
+
+Your ElevenLabs Conversational AI agent can transfer calls to Vonage Business Communications (VBC) extensions using client tool calls.
+
+The application supports **language routing**, which automatically routes transfers to language-specific extensions based on the language parameter in the tool call.
+
+#### Default Language Routing Map
+
+```javascript
+{
+  '8000': {
+    'english': '8000',
+    'spanish': '8001',
+    'french': '8003',
+    'russian': '8004',
+    'chinese': '316'
+  }
+}
+```
+
+For example, if your AI agent invokes a transfer to extension `8000` with language `spanish`, the call will be routed to extension `8001`.
+
+### Managing Language Routing
+
+You can view and update the language routing map at runtime using the REST API.
+
+#### Get Language Routing Map
+
+```bash
+GET /language-routing
+```
+
+Returns the current language routing configuration.
+
+#### Update Language Routing Map
+
+```bash
+POST /language-routing
+Content-Type: application/json
+
+{
+  "8000": {
+    "english": "8000",
+    "spanish": "8001",
+    "french": "8003"
+  },
+  "9000": {
+    "english": "9000",
+    "spanish": "9001"
+  }
+}
+```
+
+This replaces the entire language routing map with the provided configuration.
+
+### Webhooks and Events
+
+The application sends webhook notifications to `/results` endpoint for the following events:
+
+#### User Transcript
+Sent when the user's speech is transcribed:
+```json
+{
+  "type": "user_transcript",
+  "transcript": "Hello, I need help",
+  "call_uuid": "abc-123-def"
+}
+```
+
+#### Agent Response
+Sent when the AI agent responds:
+```json
+{
+  "type": "agent_response",
+  "response": "Hello! How can I assist you today?",
+  "call_uuid": "abc-123-def"
+}
+```
+
+#### Client Tool Call (Transfer Request)
+Sent when the agent requests a transfer:
+```json
+{
+  "type": "client_tool_call",
+  "extension": "8001",
+  "call_uuid": "abc-123-def"
+}
+```
+
+### Call Recording
+
+When `RECORD_CALLS=true`, the application will:
+- Record both legs of the call (split stereo)
+- Stream recordings in MP3 format
+- Store recordings in `./post-call-data/` directory
+- Generate two types of audio files:
+  - `_rec_to_11l_*.raw` - Audio sent to ElevenLabs
+  - `_rec_to_vg_*.raw` - Audio sent to Vonage (from ElevenLabs)
+
+Recording files are delivered via RTC webhooks to the `/rtc` endpoint.
+
+## API Endpoints
+
+### Voice Webhooks
+
+- `GET /answer` - Answer URL for inbound calls
+- `POST /event` - Event URL for call events
+- `GET /call?number=<number>` - Trigger outbound call
+
+### WebSocket
+
+- `WS /socket` - WebSocket endpoint for audio streaming (used by Vonage platform)
+
+### Management API
+
+- `GET /language-routing` - Get current language routing map
+- `POST /language-routing` - Update language routing map
+- `POST /results` - Webhook for transcripts, responses, and transfers
+- `POST /rtc` - RTC webhook for call recordings
+
+### Health Check
+
+- `GET /_/health` - Health check endpoint (for VCR deployments)
+
+## Technical Details
+
+### Audio Specifications
+
+- **Sample Rate**: 16 kHz
+- **Format**: Linear PCM (16-bit)
+- **Packet Size**: 640 bytes per packet (20ms of audio)
+- **Streaming Timer**: ~18-20ms intervals for optimal latency
+
+### Architecture
+
+1. **Call Setup**: When a call comes in, the application creates a Vonage conference
+2. **WebSocket Creation**: A WebSocket leg is added to the conference, connecting to this application
+3. **ElevenLabs Connection**: Application establishes a WebSocket to ElevenLabs Conversational AI
+4. **Audio Streaming**: Bidirectional audio flows between caller ↔ Vonage ↔ Application ↔ ElevenLabs
+5. **Event Handling**: Transcripts, responses, and tool calls are processed in real-time
+6. **Call Transfer**: When agent requests transfer, call is routed to VBC extension with language routing
+
+### Directory Structure
+
+```
+vonage-voice-to-11labs-ai-engines/
+├── voice-to-ai-engines.js    # Main application
+├── package.json               # Dependencies
+├── .env                       # Environment variables (create from .env-example)
+├── .env-example               # Example environment configuration
+├── .private.key               # Vonage private key (generate from dashboard)
+├── post-call-data/            # Call recordings (MP3 files)
+└── recordings/                # Real-time audio recordings (RAW files, if enabled)
+```
+
+Note: The `recordings/` directory needs to be created if `RECORD_CALLS=true`:
+```bash
+mkdir recordings
+```
+
+## Deployment Options
+
+### Local Development
+- Use ngrok for public access
+- Default port: 8000
+- Requires Node.js 22.16+
+
+### Vonage Cloud Runtime (VCR)
+- Use the `Procfile` for Heroku-style deployments
+- Health check available at `/_/health`
+- Set `VCR_PORT` environment variable if needed
+
+### Production Deployment
+- Use a process manager (e.g., PM2, systemd)
+- Set up proper SSL/TLS certificates
+- Configure firewall rules
+- Use environment variables for all secrets
 
 ## Additional resources
 
